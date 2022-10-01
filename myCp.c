@@ -204,7 +204,7 @@ int main (int argc, char **argv) {
         } else {
             for (int i = 0; i < count - 1; ++i) {
                 if (!isDirExist(fileNames[i])) {
-                    char filePath[strlen(fileNames[i]) + strlen(fileNames[count - 1]) + 1];
+                    char filePath[strlen(fileNames[i]) + strlen(fileNames[count - 1]) + 2];
 
                     strcat(filePath, fileNames[count - 1]);
                     getNewFilePath(filePath, fileNames[i]);
