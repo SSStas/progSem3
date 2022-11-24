@@ -206,11 +206,11 @@ int main (int argc, char **argv) {
                 if (!isDirExist(fileNames[i])) {
                     char filePath[strlen(fileNames[i]) + strlen(fileNames[count - 1]) + 2];
 
+                    filePath[0] = '\0';
+
                     strcat(filePath, fileNames[count - 1]);
                     getNewFilePath(filePath, fileNames[i]);
                     fileCopy(fileNames[i], filePath, param);
-
-                    filePath[0] = '\0';
                 } else {
                     printf("myCp: Invalid argument input\n");
                 }
