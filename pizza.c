@@ -19,71 +19,188 @@ typedef struct pair {
 } pair;
 
 typedef struct data {
-    char currentWord[10];
+    int wordsOffset;
+    char currentWords[5][6];
+    char *conveyor[5];
+    int ingredients[4];
     int count;
-    int maxCount;
     int correctResult;
+    int startWordCount;
+    int maxCount;
 } data;
 
-void cooker(int semId, struct sembuf *sops, char letter, data *processRes) {
-    while (1) {
-        // lock
-        if (semop(semId, sops, 1) == -1) {
-            perror("shm:semop");
-        }
+void unlockCooks(int semId) {
+    // cook 'P', cook 'I', cook 'Z', cook 'A', controller
+    struct sembuf sops[5] = {{0, 1, 0}, {1, 1, 0}, {2, 2, 0}, {3, 1, 0}, {4, 5, 0}};
 
-        strncat(processRes->currentWord, &letter, 1);
-        printf("Cooker add %c\n", letter);
-
-        if (semctl(semId, sops[0].sem_num, GETVAL, NULL) == 0) {
-            // unlock next
-            if (semop(semId, sops + 1, 1) == -1) {
-                perror("shm:semop");
-            }
-
-            if (processRes->count + 1 >= processRes->maxCount) {
-                return;
-            }
-        }
+    if (semop(semId, sops, 5) == -1) {
+        perror("shm:unlockCooks");
     }
 }
 
-void controller(int semId, struct sembuf *sops, data *processRes, char *fullWord) {
+void lockCook(int semId, int semNum) {
+    struct sembuf sops = {semNum, -1, 0};
+
+    if (semop(semId, &sops, 1) == -1) {
+        perror("shm:lockCook");
+    }
+}
+
+void waitProcess(int semId, int semNum) {
+    struct sembuf sops = {semNum, 0, 0};
+
+    if (semop(semId, &sops, 1) == -1) {
+        perror("shm:waitProcess");
+    }
+}
+
+void unlockController(int semId) {
+    struct sembuf sops = {4, -1, 0};
+
+    if (semop(semId, &sops, 1) == -1) {
+        perror("shm:lockCook");
+    }
+}
+
+void unlockAssistant(int semId) {
+    struct sembuf sops = {5, 1, 0};
+
+    if (semop(semId, &sops, 1) == -1) {
+        perror("shm:unlockAssistant");
+    }
+}
+
+void lockAssistant(int semId) {
+    struct sembuf sops = {5, -1, 0};
+
+    if (semop(semId, &sops, 1) == -1) {
+        perror("shm:lockAssistant");
+    }
+}
+
+void moveConveyor(data *processRes) {
+    char *lastWord = NULL;
+    processRes->wordsOffset = (processRes->wordsOffset + 1) % 5;
+
+    if (processRes->conveyor[4] != NULL) {
+        processRes->conveyor[4][0] = '\0';
+    }
+    
+    if (processRes->startWordCount < processRes->maxCount) {
+        processRes->conveyor[4] = processRes->currentWords[processRes->wordsOffset];
+        lastWord = processRes->conveyor[4];
+        processRes->startWordCount++;
+    }
+
+    for (int i = 4; i > 0; --i) {
+        processRes->conveyor[i] = processRes->conveyor[i - 1]; 
+    }
+
+    processRes->conveyor[0] = lastWord;
+}
+
+void cook(int semId, int semNum, char letter, data *processRes) {
+    int semVal = 0;
+
     while (1) {
-        // lock
-        if (semop(semId, sops, 1) == -1) {
-            perror("shm:semop");
-        }
-
-        printf("Controller checked! Result: %s\n", processRes->currentWord);
-        
-        if (!strcmp(processRes->currentWord, fullWord)) {
-            processRes->correctResult++;
-        }
-        processRes->currentWord[0] = '\0';
-        processRes->count++;
-
+        lockCook(semId, semNum);
 
         if (processRes->count == processRes->maxCount) {
+            return;
+        }
+
+        if (processRes->ingredients[semNum] == 0) {
+            semVal = semctl(semId, semNum, GETVAL, NULL) + 1;
+            semctl(semId, semNum, SETVAL, 1);
+            processRes->ingredients[semNum] = -1;
+            unlockAssistant(semId);
+            waitProcess(semId, semNum);
+            semctl(semId, semNum, SETVAL, semVal);
+            continue;
+        }
+
+        if (processRes->conveyor[semNum] != NULL) {
+            processRes->ingredients[semNum]--;
+            strncat(processRes->conveyor[semNum], &letter, 1);
+            printf("Cook %d add %c (left: %d ingr.)\n", 
+                semNum, letter, processRes->ingredients[semNum]);
+        } else {
+            printf("Cook %d did not add %c (left: %d ingr.)\n", 
+                semNum, letter, processRes->ingredients[semNum]);
+        }
+
+        unlockController(semId);
+    }
+}
+
+void controller(int semId, data *processRes, char *fullWord) {
+    while (1) {
+        waitProcess(semId, 4);
+
+        printf("\nConveyor view:\n");
+        for (int i = 0; i < 4; ++i) {
+            if (processRes->conveyor[i] != NULL) {
+                printf("Cook %d: %s\n", i, processRes->conveyor[i]);
+            } else {
+                printf("Cook %d: (NULL)\n", i);
+            }
+        }
+
+        moveConveyor(processRes);
+
+        if (processRes->conveyor[4] != NULL) {
+            printf("Controller checked! Result: %s\n", processRes->conveyor[4]);
+        } else {
+            printf("Controller checked! Result: (NULL)\n");
+        }
+
+        printf("---\n");
+        
+        if (processRes->conveyor[4] != NULL) {
+            if (!strcmp(processRes->conveyor[4], fullWord)) {
+                processRes->correctResult++;
+            }
+            processRes->conveyor[4][0] = '\0';
+            processRes->conveyor[4] = NULL;
+            processRes->count++;
+        }
+
+        unlockCooks(semId);
+
+        if (processRes->count == processRes->maxCount) {
+            unlockAssistant(semId);
             printf("Total: %d; Good pizza: %d; Bad pizza: %d\n", processRes->count, 
                 processRes->correctResult, processRes->count - processRes->correctResult);
             return;
         }
+    }
+}
 
-        // unlock next
-        if (semop(semId, sops + 1, 1) == -1) {
-            perror("shm:semop");
+void assistant(int semId, data *processRes, int numOfIngedients) {
+    while (1) {
+        lockAssistant(semId);
+
+        if (processRes->count == processRes->maxCount) {
+            return;
+        }
+
+        for (int i = 0; i < 4; ++i) {
+            if (processRes->ingredients[i] == -1) {
+                processRes->ingredients[i] = numOfIngedients;
+                printf("Assistant give %d ingredients to Cook %d\n", numOfIngedients, i);
+                semctl(semId, i, SETVAL, 0);
+                break;
+            }
         }
     }
 }
 
 int main(int argc, char **argv) {
-    int shmId, semId,  index, maxCount = 10;
+    int shmId, semId, maxCount = 10, numOfIngedients = 10;
     
     pair letters[] = {{'P', 1}, {'I', 1}, {'Z', 2}, {'A', 1}};
     char fullWord[] = "PIZZA";
-    int countProc = (sizeof(letters) / sizeof(pair)) + 1;
-    struct sembuf sops[countProc][2];
+    int countProc = (sizeof(letters) / sizeof(pair)) + 2;
 
     if (argc == 2) {
         maxCount = atoi(argv[1]);
@@ -94,41 +211,43 @@ int main(int argc, char **argv) {
 
     assert(maxCount > 0);
 
-    for (int i = 0; i < countProc; ++i) {
-        sops[i][0].sem_num = i;
-        sops[i][0].sem_op = -1;
-        sops[i][0].sem_flg = 0;
-
-        index = (i + 1) % countProc;
-        sops[i][1].sem_num = index;
-        sops[i][1].sem_op = (index== countProc - 1) ? 1 : letters[index].count;
-        sops[i][1].sem_flg = 0;
-    }
-
     shmId = shmget(IPC_PRIVATE, sizeof(data), 0666 | IPC_CREAT);
     semId = semget(IPC_PRIVATE, countProc, 0666 | IPC_CREAT);
 
-    if (semop(semId, &(sops[countProc - 1][1]), 1) == -1) {
-        perror("shm:semop");
-    }
-
     data *processRes = shmat(shmId, NULL, 0666);
-    processRes->currentWord[0] = '\0';
+    for (int i = 0; i < 5; ++i) {
+        processRes->currentWords[i][0] = '\0';
+        processRes->conveyor[i] = NULL;
+    }
+    for (int i = 0; i < 4; ++i) {
+        processRes->ingredients[i] = numOfIngedients;
+    }
     processRes->count = 0;
-    processRes->maxCount = maxCount;
+    processRes->wordsOffset = 4;
     processRes->correctResult = 0;
+    processRes->maxCount = maxCount;
+    processRes->startWordCount = 0;
 
-    for (int i = 0; i < countProc - 1; ++i) {
+    unlockCooks(semId);
+    moveConveyor(processRes);
+
+    for (int i = 0; i < countProc - 2; ++i) {
         pid_t pid = fork();
         if (pid == 0) {
-            cooker(semId, sops[i], letters[i].letter, processRes);
+            cook(semId, i, letters[i].letter, processRes);
             exit(0);
         }
     }
 
     pid_t pid = fork();
     if (pid == 0) {
-        controller(semId, sops[countProc - 1], processRes, fullWord);
+        controller(semId, processRes, fullWord);
+        exit(0);
+    }
+
+    pid = fork();
+    if (pid == 0) {
+        assistant(semId, processRes, numOfIngedients);
         exit(0);
     }
 
